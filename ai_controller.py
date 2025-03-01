@@ -13,6 +13,7 @@ import random
 from abc import ABC, abstractmethod
 import anthropic
 import os
+from prompts import get_vlm_user_prompt
 from dotenv import load_dotenv
 import base64
 # Set up logging
@@ -234,7 +235,10 @@ class ClaudeAI(PokemonAI):
         
         self.update_state(game_state, screen_state)
         if screen_state:
-            vlm_out = self._vlm_call('You are an AI evaluating a screenshot of a Pokemon Game. You will pass the information in the image to another LLM that makes decisions like LEFT RIGHT or UP depending on the information you feed it.', screen_state)
+            loc = self.game_state.get('location', '')
+            coord = self.game_state.get('coordinates', '')
+            vlm_user_prompt = get_vlm_user_prompt(loc, coord)
+            vlm_out = self._vlm_call(vlm_user_prompt, screen_state)
             self.screen_description = vlm_out
             # logger.info('leecatherine: vlm output:', vlm_out)
 

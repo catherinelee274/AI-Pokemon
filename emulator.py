@@ -57,6 +57,7 @@ class PokemonEmulator:
             "badges": 0,
             "money": 0,
             "coordinates": None,
+            "steps":0,
         }
         
         logger.info("Emulator initialized successfully")
@@ -298,6 +299,7 @@ class PokemonEmulator:
             "money":  money,
             'coordinates': coordinates,
             # "current_pokemon": "SQUIRTLE"
+            'steps': self.current_state['steps'] +1 , 
         }
 
         logger.info(f'leecatherine current state: {self.current_state}')

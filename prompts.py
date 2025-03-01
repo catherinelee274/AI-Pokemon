@@ -7,10 +7,21 @@ def navigator_system_prompt():
 def navigator_user_prompt(): 
     pass
 
-def vlm_user_prompt(): 
+def get_vlm_user_prompt(location, coordinates): 
     return '''
-    You are an AI evaluating a screenshot of a Pokemon Game. You will pass the information in the image to another LLM that makes decisions like ["up", "down", "left", "right", "a"] depending on the information you feed it.
-    Keep note of where the cursor is.
+   You are a vision-language model analyzing a screenshot from the game Pokémon Red. The player is currently located in {location} at coordinates {coordinates}. The player has 500 money and the following Pokémon in their team: Pikachu, Bulbasaur, Charmander.
+
+    In the screenshot, there are several important visual elements:
+    - The player character is standing near a Pokémon Center.
+    - There are NPC characters in the vicinity, including a researcher and a shopkeeper.
+    - The ground is a grassy area with a few trees and a path leading north.
+
+    Based on this image, please describe the following:
+    1. What actions can the player take in this scene?
+    2. Are there any items, characters, or significant landmarks that might influence the player's next move?
+    3. Considering the player's current status and location, what would be the most strategic next button press to progress in the game?
+
+    Please provide detailed descriptions and reasoning for your suggestions.
     '''
     
 
