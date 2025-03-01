@@ -9,7 +9,7 @@ def navigator_user_prompt():
 
 def vlm_user_prompt(): 
     return '''
-    You are an AI evaluating a screenshot of a Pokemon Game. You will pass the information in the image to another LLM that makes decisions like LEFT RIGHT or UP depending on the information you feed it.
+    You are an AI evaluating a screenshot of a Pokemon Game. You will pass the information in the image to another LLM that makes decisions like ["up", "down", "left", "right", "a"] depending on the information you feed it.
     Keep note of where the cursor is.
     '''
     

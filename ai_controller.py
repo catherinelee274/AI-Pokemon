@@ -6,6 +6,7 @@ This module provides a framework for multiple AIs to control the game.
 
 import time
 import requests
+import re
 import json
 import logging
 import random
@@ -40,6 +41,7 @@ class PokemonAI(ABC):
         self.name = name
         self.game_state = {}
         self.screen_state = None
+        self.screen_description = None
         self.previous_actions = []
         self.current_role = "player"  # "player" or "pokemon"
     
@@ -103,7 +105,6 @@ class GrokAI(PokemonAI):
     def _decide_player_action(self):
         """Decide actions for player movement and exploration."""
         location = self.game_state.get("location", "")
-        
         # Starting the game
         if location == "PALLET TOWN" and not self.previous_actions:
             return "a", "Let's start our Pokémon adventure!"
@@ -206,18 +207,25 @@ class ClaudeAI(PokemonAI):
             ],
         )
 
-    def _llm_call(self, system_prompt, user_prompt): 
-        return self.client.messages.create(
+    def _llm_call(self,user_prompt, system_prompt=None ): 
+        system_prompt = 'user' if not system_prompt else system_prompt
+        res = ''
+        with self.client.messages.stream(
             model="claude-3-7-sonnet-20250219",
-            max_tokens=2000,
+            max_tokens=64000,
             thinking={
                 "type": "enabled",
-                "budget_tokens": 16000
+                "budget_tokens": 32000
             },
             messages=[
                 {"role": system_prompt, "content": user_prompt}
             ]
-        )
+        ) as stream: 
+            for text in stream.text_stream:
+                print(text, end="", flush=True)
+                res += text 
+
+        return res
         
     def decide_action(self, game_state, screen_state=None, role="player"):
         """Claude's decision-making logic."""
@@ -227,6 +235,7 @@ class ClaudeAI(PokemonAI):
         self.update_state(game_state, screen_state)
         if screen_state:
             vlm_out = self._vlm_call('You are an AI evaluating a screenshot of a Pokemon Game. You will pass the information in the image to another LLM that makes decisions like LEFT RIGHT or UP depending on the information you feed it.', screen_state)
+            self.screen_description = vlm_out
             # logger.info('leecatherine: vlm output:', vlm_out)
 
 
@@ -238,60 +247,251 @@ class ClaudeAI(PokemonAI):
         elif role == "pokemon":
             return self._decide_pokemon_action()
     
-    def _decide_player_action(self):
-        """Claude's player movement and exploration strategy."""
-        location = self.game_state.get("location", "")
-        logger.info(f'leecatherine Game State: {self.game_state}')
-
-        # current_pokemon 
-        # money 
-        # badges 
-
-        # self.screen_state
-
-        
-    # _llm_call
-        
-        # Starting the game
-        if location == "PALLET TOWN" and not self.previous_actions:
-            return "a", "I'm excited to start this Pokémon journey! Let's see what awaits us."
-        
-        # Choose starter Pokémon (Claude prefers Bulbasaur)
-        if "BULBASAUR" not in str(self.game_state) and len(self.previous_actions) < 15:
-            # Navigate to Bulbasaur
-            if "right" not in self.previous_actions[-3:] if self.previous_actions else True:
-                return "left", "I think Bulbasaur is an excellent strategic choice for the early gyms."
-            else:
-                return "a", "Bulbasaur is my choice - great for the first two gyms!"
-        
-        # More methodical exploration than Grok
-        recent_moves = self.previous_actions[-5:] if self.previous_actions else []
-        
-        # Avoid backtracking immediately
-        if recent_moves and recent_moves[-1] == "up":
-            avoid = "down"
-        elif recent_moves and recent_moves[-1] == "down":
-            avoid = "up"
-        elif recent_moves and recent_moves[-1] == "left":
-            avoid = "right"
-        elif recent_moves and recent_moves[-1] == "right":
-            avoid = "left"
-        else:
-            avoid = None
-        
-        # Systematic exploration
-        if avoid:
-            options = ["up", "down", "left", "right"]
-            options.remove(avoid)
-            direction = random.choice(options)
-        else:
-            direction = random.choice(["up", "down", "left", "right"])
-        
-        if random.random() < 0.25:
-            return "a", "I should check if there's anything interesting here."
-        else:
-            return direction, f"Let's explore {direction}ward and see what we find."
+  
     
+    
+    def _decide_player_action(self):
+        """
+        Advanced movement and exploration strategy using Claude 3.7 Sonnet reasoning.
+        Makes context-aware decisions based on current game state, location, and goals.
+        """
+        # Gather all relevant game state information
+        location = self.game_state.get("location", "Unknown")
+        coordinates = self.game_state.get("coordinates", "")
+        pokemon_team = self.game_state.get("pokemon_team", [])
+        badges = self.game_state.get("badges", 0)
+        money = self.game_state.get("money", 0)
+        items = self.game_state.get("items", [])
+        
+        # Log complete game state for debugging
+        logger.info(f'Game State: {json.dumps(self.game_state, indent=2)}')
+        
+        # Create context for the LLM
+        context = self._build_game_context(location, coordinates, pokemon_team, badges, money, items)
+        
+        # Prepare action history for context
+        action_history = self._format_action_history()
+        
+        # Generate prompt for the LLM
+        prompt = f"""
+        You are playing Pokémon Red. Based on the following game state, decide the next optimal action.
+        
+        CURRENT GAME STATE:
+        {context}
+        
+        RECENT ACTIONS:
+        {action_history}
+        
+        SCREEN DESCRIPTION:
+        {self.screen_description if hasattr(self, 'screen_description') else 'No screen description available'}
+        
+        What should be the next action? Choose one: up, down, left, right, a, b, start, select.
+        Provide your reasoning and then your final decision in the format:
+        REASONING: [your strategic thinking]
+        ACTION: [chosen action]
+        """
+        
+        try:
+            # Call the LLM with the prompt
+            response = self._llm_call(user_prompt=prompt)
+            
+            logger.info(f'Reasoning raw output:', {response}) 
+
+            # Parse the LLM response
+            action, reasoning = self._parse_llm_response(response)
+            
+            # If we couldn't get a valid action from the LLM, fall back to basic exploration
+            if not action:
+                return self._fallback_exploration()
+            
+            return action, reasoning
+        
+        except Exception as e:
+            logger.error(f"Error calling LLM: {e}")
+            return self._fallback_exploration()
+
+    def _build_game_context(self, location, coordinates, pokemon_team, badges, money, items):
+        """Build a detailed context description for the LLM."""
+        # Format Pokémon team information
+        team_info = "None" if not pokemon_team else "\n".join([
+            f"- {pokemon.get('name', 'UNKNOWN')} (Lv.{pokemon.get('level', '?')}) "
+            f"HP: {pokemon.get('hp', '?')}/{pokemon.get('max_hp', '?')}"
+            for pokemon in pokemon_team
+        ])
+        
+        # Format item information
+        items_info = "None" if not items else "\n".join([
+            f"- {item.get('name', 'UNKNOWN')} x{item.get('count', 0)}"
+            for item in items
+        ])
+        
+        # Game progress indicators
+        progress = f"Badges: {badges}/8"
+        
+        # Determine current game objectives based on location and progress
+        objectives = self._determine_current_objectives(location, badges, pokemon_team)
+        
+        return f"""
+        Location: {location}
+        Coordinates: {coordinates}
+        Money: ${money}
+        Progress: {progress}
+        
+        Pokémon Team:
+        {team_info}
+        
+        Items:
+        {items_info}
+        
+        Current Objectives:
+        {objectives}
+        """
+
+    def _determine_current_objectives(self, location, badges, pokemon_team):
+        """Determine what the player should be trying to accomplish based on game state."""
+        # Early game objectives
+        if badges == 0:
+            if "Pallet Town" in location and not pokemon_team:
+                return "- Get your first Pokémon from Professor Oak's Lab\n- Begin your journey to become a Pokémon Master"
+            elif "Pallet Town" in location and pokemon_team:
+                return "- Head north to Route 1\n- Travel to Viridian City"
+            elif "Route 1" in location:
+                return "- Travel north to Viridian City\n- Train your starter Pokémon"
+            elif "Viridian City" in location:
+                return "- Visit the Pokémon Center to heal\n- Stock up on supplies\n- Head north to Viridian Forest"
+            elif "Viridian Forest" in location:
+                return "- Navigate through the forest\n- Catch Bug-type Pokémon\n- Reach Pewter City"
+            elif "Pewter City" in location:
+                return "- Challenge Brock at the Pewter Gym\n- Aim to earn your first badge"
+    
+        # Mid-game objectives based on badge count
+        elif badges == 1:
+            return "- Head east to Mt. Moon\n- Make your way to Cerulean City\n- Prepare to challenge Misty"
+        elif badges == 2:
+            return "- Explore east of Cerulean\n- Head south to Vermilion City\n- Prepare to battle Lt. Surge"
+        
+        # Late game progression
+        elif badges >= 6:
+            return "- Prepare for the Elite Four\n- Train your team to higher levels\n- Ensure balanced type coverage"
+        
+        # Default objectives
+        return "- Explore the current area\n- Train your Pokémon\n- Find and challenge the next Gym Leader"
+
+    def _format_action_history(self):
+        """Format recent actions for context."""
+        if not self.previous_actions:
+            return "No previous actions recorded."
+        
+        # Take the last 10 actions
+        recent_actions = self.previous_actions[-10:]
+        formatted_actions = []
+        
+        for action in recent_actions:
+            # If the action is a tuple with action and reasoning
+            if isinstance(action, tuple) and len(action) == 2:
+                formatted_actions.append(f"{action[0]} - {action[1]}")
+            else:
+                formatted_actions.append(str(action))
+        
+        return "\n".join(formatted_actions)
+
+    def _parse_llm_response(self, response):
+        """Extract the action and reasoning from the LLM response."""
+        try:
+            # Extract action from the response
+            action_match = re.search(r"ACTION:\s*(\w+)", response, re.IGNORECASE)
+            reasoning_match = re.search(r"REASONING:\s*(.*?)(?=ACTION:|$)", response, re.IGNORECASE | re.DOTALL)
+            
+            if action_match:
+                action = action_match.group(1).lower()
+                # Validate action is one of the allowed buttons
+                if action not in ["up", "down", "left", "right", "a", "b", "start", "select"]:
+                    logger.warning(f"Invalid action received from LLM: {action}")
+                    return None, None
+            else:
+                logger.warning("No action found in LLM response")
+                return None, None
+            
+            reasoning = reasoning_match.group(1).strip() if reasoning_match else "Strategic movement based on analysis."
+            
+            return action, reasoning
+        
+        except Exception as e:
+            logger.error(f"Error parsing LLM response: {e}")
+        return None, None
+
+    def _simulated_claude_response(self, prompt):
+        """Generate a simulated Claude response for testing without API access."""
+        # Extract key information from prompt to inform the simulated response
+        location = "Unknown"
+        if "Location:" in prompt:
+            location_match = re.search(r"Location:\s*([^\n]+)", prompt)
+            if location_match:
+                location = location_match.group(1).strip()
+        
+        # Generate contextual response based on location
+        if "Pallet Town" in location:
+            return """
+            REASONING: I'm in Pallet Town, the starting location. If I don't have a Pokémon yet, I should head to Professor Oak's lab which is typically located to the north of the player's starting position. The professor will give me my first Pokémon.
+            
+            ACTION: up
+            """
+        elif "Route 1" in location:
+            return """
+            REASONING: Route 1 connects Pallet Town and Viridian City. Since I'm just starting out, I should continue north to reach Viridian City where I can heal my Pokémon and buy supplies. There might be wild Pokémon in the tall grass that I can battle for experience.
+            
+            ACTION: up
+            """
+        elif "Viridian City" in location:
+            return """
+            REASONING: In Viridian City, I should first visit the Pokémon Center to heal my team. Then I should visit the Poké Mart to buy supplies if I have enough money. After that, I should head north toward Viridian Forest to continue my journey to Pewter City.
+            
+            ACTION: a
+            """
+        else:
+            # Default exploration behavior
+            directions = ["up", "down", "left", "right"]
+            action = random.choice(directions)
+            return f"""
+            REASONING: I'm in {location} and should explore this area to find items, trainers, and potentially new Pokémon to catch. I'll try moving {action} to discover what's in that direction.
+            
+            ACTION: {action}
+            """
+
+    def _fallback_exploration(self):
+        """Fallback strategy when LLM fails or is unavailable."""
+        # Avoid repeating the last direction
+        recent_moves = self.previous_actions[-3:] if self.previous_actions else []
+        
+        # Extract just the direction part if we have tuples
+        recent_directions = []
+        for move in recent_moves:
+            if isinstance(move, tuple) and len(move) == 2:
+                recent_directions.append(move[0])
+            else:
+                recent_directions.append(move)
+        
+        # Avoid backtracking
+        avoid = None
+        if recent_directions and recent_directions[-1] == "up":
+            avoid = "down"
+        elif recent_directions and recent_directions[-1] == "down":
+            avoid = "up"
+        elif recent_directions and recent_directions[-1] == "left":
+            avoid = "right"
+        elif recent_directions and recent_directions[-1] == "right":
+            avoid = "left"
+        
+        options = ["up", "down", "left", "right"]
+        if avoid and avoid in options:
+            options.remove(avoid)
+        
+        action = random.choice(options)
+        reasoning = "Exploring the area to find new paths and Pokémon."
+        
+        return action, reasoning
+
+
     def _decide_pokemon_action(self):
         """Claude's battle strategy."""
         # Get current Pokémon info
