@@ -13,8 +13,7 @@ from abc import ABC, abstractmethod
 import anthropic
 import os
 from dotenv import load_dotenv
-
-
+import base64
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -78,7 +77,6 @@ class PokemonAI(ABC):
             self.current_role = role
         else:
             logger.warning(f"Invalid role: {role}. Must be 'player' or 'pokemon'.")
-
 
 class GrokAI(PokemonAI):
     """
@@ -146,6 +144,7 @@ class GrokAI(PokemonAI):
         return "a", "Using our strongest move! It should be super effective!"
 
 
+
 class ClaudeAI(PokemonAI):
     """
     Claude AI implementation for playing Pokémon.
@@ -156,15 +155,65 @@ class ClaudeAI(PokemonAI):
         super().__init__("Claude")
         self.strategy = "balanced"  # balanced, aggressive, defensive
     
-        self.model = anthropic.Anthropic(
+        self.client = anthropic.Anthropic(
             api_key=claude_api_key,
         )
 
+    def is_base64(self, data):
+        """Check if the given bytes are valid base64 encoded."""
+        try:
+            # Decode and re-encode to check validity
+            decoded = base64.b64decode(data, validate=True)
+            return base64.b64encode(decoded).strip() == data.strip()
+        except (ValueError, TypeError):
+            return False
+
+    def process_image(self, image): 
+        img_media = "image/png"
+        img_data = base64.b64encode(image).decode("utf-8")
+        return img_media, img_data
+
+    def _vlm_call(self, user_prompt, image): 
+        if type(image) != bytes:
+            return None
+        
+        img_media, img_data = self.process_image(image) 
+        # if not self.is_base64(img_data):
+        #     return None
+
+        model_id = 'claude-3-5-sonnet-20241022' 
+        return self.client.messages.create(
+            model=model_id,
+            max_tokens=1024,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": img_media,
+                                "data": img_data,
+                            },
+                        },
+                        {
+                            "type": "text",
+                            "text": user_prompt
+                        }
+                    ],
+                }
+            ],
+        )
 
     def _llm_call(self, system_prompt, user_prompt): 
-        return self.model.messages.create(
+        return self.client.messages.create(
             model="claude-3-7-sonnet-20250219",
-            max_tokens=1024,
+            max_tokens=2000,
+            thinking={
+                "type": "enabled",
+                "budget_tokens": 16000
+            },
             messages=[
                 {"role": system_prompt, "content": user_prompt}
             ]
@@ -176,8 +225,9 @@ class ClaudeAI(PokemonAI):
         # In a real implementation, this would connect to Claude's API
         
         self.update_state(game_state, screen_state)
-
-        logger.info('leecatherine: decide_action')
+        if screen_state:
+            vlm_out = self._vlm_call('You are an AI evaluating a screenshot of a Pokemon Game. You will pass the information in the image to another LLM that makes decisions like LEFT RIGHT or UP depending on the information you feed it.', screen_state)
+            # logger.info('leecatherine: vlm output:', vlm_out)
 
 
         # VLM here to process screen_state
@@ -191,6 +241,16 @@ class ClaudeAI(PokemonAI):
     def _decide_player_action(self):
         """Claude's player movement and exploration strategy."""
         location = self.game_state.get("location", "")
+        logger.info(f'leecatherine Game State: {self.game_state}')
+
+        # current_pokemon 
+        # money 
+        # badges 
+
+        # self.screen_state
+
+        
+    # _llm_call
         
         # Starting the game
         if location == "PALLET TOWN" and not self.previous_actions:
@@ -351,9 +411,9 @@ def get_game_screenshot():
     """Get screenshot from the API."""
     try:
         response = requests.get(f"{API_BASE_URL}/screenshot")
-        return response.json()
+        return response.content
     except Exception as e:
-        logger.error(f"Error getting game status: {e}")
+        logger.error(f"Error getting game status during get_game_screenshot: {e}")
         return {"status": "error"}
     
 def get_game_status():
@@ -425,10 +485,10 @@ def demo():
         # Get current game state
         state = get_game_state()
 
-        screen_state = get_game_screenshot()
+        screen = get_game_screenshot() # should be a PIL image
         
         # Get AI's decision
-        action, commentary = manager.get_action(state, screen_state=screen_state)
+        action, commentary = manager.get_action(state, screen_state=screen)
         
         # Execute the action
         execute_action(action, commentary)

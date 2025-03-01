@@ -208,7 +208,6 @@ def get_state():
     
     with emulator_lock:
         state = emulator.get_state()
-        state["currentAI"] = AI_SETTINGS["currentAI"]  # Add current AI to state
         return jsonify(state)
 
 @app.route('/api/screenshot')
